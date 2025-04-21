@@ -5,7 +5,7 @@ st.set_page_config(page_title="🛒 Walmart Sheet Updater", layout="centered")
 
 st.title("🧾 Walmart Price Checker")
 
-sheet_url = st.text_input("Paste your **Google Sheet URL** (with edit access):")
+sheet_url = st.text_input("Paste your **Google Sheet URL** and give edit access to (scraping-bot@productsheetsync.iam.gserviceaccount.com) and then click on update sheet:")
 
 
 if st.button("🔁 Update Sheet"):
