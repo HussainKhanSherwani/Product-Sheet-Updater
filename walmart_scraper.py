@@ -4,6 +4,7 @@ import requests
 from bs4 import BeautifulSoup
 from oauth2client.service_account import ServiceAccountCredentials
 import streamlit as st
+import time
 
 SCRAPING_ANT_API_KEY = st.secrets["api_keys"]["scraping_ant"]
 
