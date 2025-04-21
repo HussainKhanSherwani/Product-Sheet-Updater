@@ -31,6 +31,9 @@ def scrape_walmart_product(url, max_retries=3):
 
         if response.status_code == 200:
             break
+        elif response.status_code == 409:
+            print("409 Conflict. Retrying...")
+            time.sleep(2)
         else:
             print(f"❌ Attempt {attempt + 1} failed for URL: {url} - Status code: {response.status_code}")
             if attempt == max_retries - 1:
