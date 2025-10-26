@@ -47,7 +47,7 @@ if not st.session_state.running:
 
         # Run backend with start_row and end_row as arguments
         process = subprocess.Popen(
-            ["python3", "update_walmart_sheet.py", str(start_row), str(end_row)],
+            ["python3", "walmart_sheet_updater.py", str(start_row), str(end_row)],
             stdout=open(LOG_FILE, "a", encoding="utf-8"),
             stderr=subprocess.STDOUT,
         )
