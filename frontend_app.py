@@ -1,59 +1,57 @@
 import streamlit as st
 import subprocess
-import sys
-from datetime import datetime
+import time
+import os
 
-st.set_page_config(page_title="Walmart Sheet Updater", page_icon="🛒", layout="centered")
+st.set_page_config(page_title="Walmart Sheet Updater", layout="wide")
 
-st.title("🕷 Walmart Sheet Updater")
-st.caption("Automatically scrape Walmart links from Google Sheet and update price, stock, and seller info.")
+st.title("🛒 Walmart Sheet Updater Dashboard")
 
 # --- Input controls ---
-start_row = st.number_input("Start Row (excluding header)", min_value=2, value=2, step=1)
-end_row = st.number_input("End Row", min_value=start_row, value=start_row + 5, step=1)
+start_row = st.number_input("Start Row", min_value=2, value=3, step=1)
+end_row = st.number_input("End Row", min_value=2, value=3, step=1)
 
-st.divider()
+if start_row > end_row:
+    st.error("❌ Start row must be less than or equal to End row.")
+    st.stop()
 
-# --- Run button ---
-if st.button("🚀 Run Walmart Scraper"):
-    st.info(f"Running scraper from row {start_row} to {end_row}...")
+log_file = "scraper.log"
 
-    # --- Create placeholder for live logs ---
-    log_area = st.empty()
-    logs = ""
+# --- Start button ---
+if st.button("🚀 Start Scraper"):
+    # Clear old log file
+    open(log_file, "w").close()
 
-    # --- Timestamp helper ---
-    def ts(msg):
-        return f"[{datetime.now().strftime('%H:%M:%S')}] {msg}"
+    cmd = ["python", "walmart_sheet_updater.py", str(start_row), str(end_row)]
+    process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
 
-    try:
-        # --- Run the scraper as subprocess ---
-        process = subprocess.Popen(
-            [sys.executable, "walmart_sheet_updater.py", str(start_row), str(end_row)],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            bufsize=1,
-        )
+    st.session_state["process"] = process
+    st.session_state["running"] = True
+    st.success(f"✅ Scraper started for rows {start_row}-{end_row}...")
 
-        # --- Stream live logs ---
-        for line in process.stdout:
-            line = line.strip()
-            if not line:
-                continue
-            logs += ts(line) + "\n"
-            log_area.text_area("📜 Live Logs", logs, height=400)
+# --- Live Log Display ---
+st.subheader("📜 Live Logs")
 
-        process.wait()  # wait for completion
+log_display = st.empty()
 
-        # --- Final status ---
-        if process.returncode == 0:
-            st.success("✅ Walmart Sheet successfully updated!")
+if os.path.exists(log_file):
+    with open(log_file, "r", encoding="utf-8") as f:
+        logs = f.read()
+    log_display.text_area("Logs", logs, height=400)
+
+# --- Auto-refresh logs ---
+if "running" in st.session_state and st.session_state["running"]:
+    while True:
+        time.sleep(2)
+        if os.path.exists(log_file):
+            with open(log_file, "r", encoding="utf-8") as f:
+                logs = f.read()
+            log_display.text_area("Logs", logs, height=400)
         else:
-            st.error("❌ Script exited with errors — check logs above.")
+            log_display.text_area("Logs", "Waiting for logs...", height=400)
 
-    except Exception as e:
-        st.error(f"⚠️ Failed to run scraper: {e}")
-
-st.divider()
-st.caption("💡 Tip: You can monitor live scraping logs above in real time.")
+        # Check if scraper process finished
+        if st.session_state["process"].poll() is not None:
+            st.success("🎉 Scraper completed successfully.")
+            st.session_state["running"] = False
+            break

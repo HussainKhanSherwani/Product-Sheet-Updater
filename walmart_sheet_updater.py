@@ -10,6 +10,20 @@ import sys
 import streamlit as st
 
 
+# --- CONFIGURATION ---
+LOG_FILE = "scraper.log"
+
+def log(msg):
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    line = f"[{timestamp}] {msg}"
+    print(line, flush=True)
+    with open(LOG_FILE, "a", encoding="utf-8") as f:
+        f.write(line + "\n")
+
+# Clear old logs if running new session
+open(LOG_FILE, "w").close()
+log("🚀 Walmart sheet updater started...")
+
 
 # --- CONFIGURATION ---
 GCP_CREDENTIALS_FILE = 'credentials.json'
@@ -61,25 +75,25 @@ date_col = col("Stock Update Date")
 diff_col = col("Price Difference")
 
 # --- STEP 1: Copy Today → Old (once for all rows) ---
-print("🔁 Copying Today → Old columns...")
+log("🔁 Copying Today → Old columns...")
 
 # --- Prepare old data to copy ---
 old_price_values = [[row[today_price_col - 1]] for row in rows[:end_row - start_row + 1]]
 old_stock_values = [[row[today_stock_col - 1]] for row in rows[:end_row - start_row + 1]]
 
-print(old_price_values)
-print(old_stock_values)
+log(old_price_values)
+log(old_stock_values)
 # --- Dynamically calculate update ranges ---
 old_price_range = f"{chr(64 + old_price_col)}{start_row}:{chr(64 + old_price_col)}{end_row}"
 old_stock_range = f"{chr(64 + old_stock_col)}{start_row}:{chr(64 + old_stock_col)}{end_row}"
-print(f"    ↳ Old Price Range: {old_price_range}")
-print(f"    ↳ Old Stock Range: {old_stock_range}")
+log(f"    ↳ Old Price Range: {old_price_range}")
+log(f"    ↳ Old Stock Range: {old_stock_range}")
 
 # --- Push updates ---
 sheet.update(old_price_range, old_price_values)
 sheet.update(old_stock_range, old_stock_values)
 
-print("✅ Old Price and Old Stock columns updated.\n")
+log("✅ Old Price and Old Stock columns updated.\n")
 time.sleep(2)
 
 # --- ScrapingAnt HTML fetcher ---
@@ -92,12 +106,12 @@ def fetch_html_with_scrapingant(url):
         conn.request("GET", path)
         res = conn.getresponse()
         if res.status != 200:
-            print(f"❌ ScrapingAnt failed ({res.status}) for {url}")
+            log(f"❌ ScrapingAnt failed ({res.status}) for {url}")
             return None
         html = res.read().decode("utf-8")
         return html
     except Exception as e:
-        print(f"⚠️ Exception fetching {url}: {e}")
+        log(f"⚠️ Exception fetching {url}: {e}")
         return None
     finally:
         try:
@@ -165,7 +179,7 @@ def scrape_multiple_walmart_links(links_str):
     sellers = set()
 
     for link in links:
-        print(f"    ↳ scraping: {link}")
+        log(f"    ↳ scraping: {link}")
         html = None
 
         # --- Retry fetching HTML up to 3 times ---
@@ -173,18 +187,18 @@ def scrape_multiple_walmart_links(links_str):
             html = fetch_html_with_scrapingant(link)
             if html:
                 break
-            print(f"      ⚠️ Fetch attempt {attempt+1} failed, retrying...")
+            log(f"      ⚠️ Fetch attempt {attempt+1} failed, retrying...")
             time.sleep(2)
 
         if not html:
-            print(f"      ❌ failed all 3 fetch attempts for {link}")
+            log(f"      ❌ failed all 3 fetch attempts for {link}")
             continue
 
         # --- Parse page (with retry if price missing) ---
         price, stock, seller = parse_walmart_html(html)
 
         if price is None:
-            print(f"      ⚠️ Price missing, retrying parse for {link}...")
+            log(f"      ⚠️ Price missing, retrying parse for {link}...")
             retry_price = None
             for attempt in range(2):  # two more retries
                 time.sleep(2)
@@ -197,7 +211,7 @@ def scrape_multiple_walmart_links(links_str):
                     retry_price = price_retry
                     break
             if retry_price is None:
-                print(f"      ❌ Price still missing after 3 attempts for {link}")
+                log(f"      ❌ Price still missing after 3 attempts for {link}")
                 price = ""
 
         # --- Aggregate results ---
@@ -238,7 +252,7 @@ def scrape_multiple_walmart_links(links_str):
 
 
 # --- STEP 2: Scraping Loop (limit 300, batch write every 5) ---
-print("🕷 Starting scrape (max 300 items)...\n")
+log("🕷 Starting scrape (max 300 items)...\n")
 batch_size = 300
 update_chunk = 2
 
@@ -254,7 +268,7 @@ for idx, row in enumerate(rows[:batch_size], start=start_row):
     if not url_str:
         pass
     else:
-        print(f"🔍 Row {idx}: {url_str}")
+        log(f"🔍 Row {idx}: {url_str}")
 
         price, stock, seller_name = scrape_multiple_walmart_links(url_str)
 
@@ -280,7 +294,7 @@ for idx, row in enumerate(rows[:batch_size], start=start_row):
         except ValueError:
             diff_val = ""
 
-        print(f"✅ {idx}: price={price}, stock={stock}, buybox={seller_name}, diff={diff_val}")
+        log(f"✅ {idx}: price={price}, stock={stock}, buybox={seller_name}, diff={diff_val}")
 
 
 
@@ -297,14 +311,14 @@ for idx, row in enumerate(rows[:batch_size], start=start_row):
     if len(batch_rows) >= update_chunk:
         start_row = batch_rows[0]
         end_row = batch_rows[-1]
-        print(f"📤 Writing rows {start_row}-{end_row}...")
+        log(f"📤 Writing rows {start_row}-{end_row}...")
         # --- Perform all updates in this batch ---
         sheet.update(f"{chr(64 + today_price_col)}{start_row}:{chr(64 + today_price_col)}{end_row}", batch_prices)
         sheet.update(f"{chr(64 + today_stock_col)}{start_row}:{chr(64 + today_stock_col)}{end_row}", batch_stocks)
         sheet.update(f"{chr(64 + buybox_col)}{start_row}:{chr(64 + buybox_col)}{end_row}", batch_buyboxes)
         sheet.update(f"{chr(64 + date_col)}{start_row}:{chr(64 + date_col)}{end_row}", batch_dates)
         sheet.update(f"{chr(64 + diff_col)}{start_row}:{chr(64 + diff_col)}{end_row}", batch_diffs)
-        print(f"✅ Updated rows {start_row}-{end_row}\n")
+        log(f"✅ Updated rows {start_row}-{end_row}\n")
 
         # Clear batch
         batch_prices, batch_stocks, batch_buyboxes, batch_dates, batch_diffs, batch_rows = ([] for _ in range(6))
@@ -312,13 +326,13 @@ for idx, row in enumerate(rows[:batch_size], start=start_row):
 if len(batch_rows) > 0:
     start_row = batch_rows[0]
     end_row = batch_rows[-1]
-    print(f"📤 Writing final rows {start_row}-{end_row}...")
+    log(f"📤 Writing final rows {start_row}-{end_row}...")
     # --- Perform all updates in this batch ---
     sheet.update(f"{chr(64 + today_price_col)}{start_row}:{chr(64 + today_price_col)}{end_row}", batch_prices)
     sheet.update(f"{chr(64 + today_stock_col)}{start_row}:{chr(64 + today_stock_col)}{end_row}", batch_stocks)
     sheet.update(f"{chr(64 + buybox_col)}{start_row}:{chr(64 + buybox_col)}{end_row}", batch_buyboxes)
     sheet.update(f"{chr(64 + date_col)}{start_row}:{chr(64 + date_col)}{end_row}", batch_dates)
     sheet.update(f"{chr(64 + diff_col)}{start_row}:{chr(64 + diff_col)}{end_row}", batch_diffs)
-    print(f"✅ Updated rows {start_row}-{end_row}\n")
+    log(f"✅ Updated rows {start_row}-{end_row}\n")
 
-print("🎉 Done! All 300 rows scraped and updated in batches of 5.")
+log(f"🎉 Done! All {end_row - start_row + 1} rows scraped and updated in batches of 5.")
