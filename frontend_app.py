@@ -1,21 +1,59 @@
 import streamlit as st
-from scraper import update_google_sheet,get_worksheet_from_url
+import subprocess
+import sys
+from datetime import datetime
 
-st.set_page_config(page_title="🛒 Product Sheet Updater", layout="centered")
+st.set_page_config(page_title="Walmart Sheet Updater", page_icon="🛒", layout="centered")
 
-st.title("🧾 Product Price Checker")
+st.title("🕷 Walmart Sheet Updater")
+st.caption("Automatically scrape Walmart links from Google Sheet and update price, stock, and seller info.")
 
-sheet_url = st.text_input("Paste your **Google Sheet URL** and give edit access to (scraping-bot@productsheetsync.iam.gserviceaccount.com) and then click on update sheet:")
+# --- Input controls ---
+start_row = st.number_input("Start Row (excluding header)", min_value=2, value=2, step=1)
+end_row = st.number_input("End Row", min_value=start_row, value=start_row + 5, step=1)
 
+st.divider()
 
-if st.button("🔁 Update Sheet"):
-    if sheet_url.strip() == "":
-        st.warning("Please enter a Google Sheet URL.")
-    else:
-        st.info("⏳ Scraping and updating, please wait...")
-        try:
-            worksheet = get_worksheet_from_url(sheet_url)
-            update_google_sheet(worksheet)
-            st.success("✅ Sheet updated successfully!")
-        except Exception as e:
-            st.error(f"❌ Failed to update sheet: {e}")
+# --- Run button ---
+if st.button("🚀 Run Walmart Scraper"):
+    st.info(f"Running scraper from row {start_row} to {end_row}...")
+
+    # --- Create placeholder for live logs ---
+    log_area = st.empty()
+    logs = ""
+
+    # --- Timestamp helper ---
+    def ts(msg):
+        return f"[{datetime.now().strftime('%H:%M:%S')}] {msg}"
+
+    try:
+        # --- Run the scraper as subprocess ---
+        process = subprocess.Popen(
+            [sys.executable, "walmart_sheet_updater.py", str(start_row), str(end_row)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+        )
+
+        # --- Stream live logs ---
+        for line in process.stdout:
+            line = line.strip()
+            if not line:
+                continue
+            logs += ts(line) + "\n"
+            log_area.text_area("📜 Live Logs", logs, height=400)
+
+        process.wait()  # wait for completion
+
+        # --- Final status ---
+        if process.returncode == 0:
+            st.success("✅ Walmart Sheet successfully updated!")
+        else:
+            st.error("❌ Script exited with errors — check logs above.")
+
+    except Exception as e:
+        st.error(f"⚠️ Failed to run scraper: {e}")
+
+st.divider()
+st.caption("💡 Tip: You can monitor live scraping logs above in real time.")
