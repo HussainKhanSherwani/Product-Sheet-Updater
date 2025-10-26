@@ -1,5 +1,5 @@
 import gspread
-from google.oauth2.service_account import Credentials
+from oauth2client.service_account import ServiceAccountCredentials
 from bs4 import BeautifulSoup
 import http.client
 import urllib.parse
@@ -7,12 +7,13 @@ import re
 import time
 from datetime import datetime
 import sys
+import streamlit as st
 
 
 
 # --- CONFIGURATION ---
 GCP_CREDENTIALS_FILE = 'credentials.json'
-SCRAPING_ANT_API_KEY = 'cb1d3ba48b9a469f924fdba907630796'
+SCRAPING_ANT_API_KEY = st.secrets["api_keys"]["scraping_ant"]
 TARGET_SHEET_URL = 'https://docs.google.com/spreadsheets/d/10RghapkcMXrvH_LzFfe36d9rSBrxY-6oK5IfUMWG4Fo/edit?gid=1224872406#gid=1224872406'
 
 # --- AUTHORIZATION ---
@@ -21,8 +22,10 @@ scope = [
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/drive"
 ]
-creds = Credentials.from_service_account_file(GCP_CREDENTIALS_FILE, scopes=scope)
-client = gspread.authorize(creds)
+credentials_dict = st.secrets["gcp_service_account"]
+credentials = ServiceAccountCredentials.from_json_keyfile_dict(credentials_dict, scope)
+gc = gspread.authorize(credentials)
+client = gc
 
 
 start_row = 3
