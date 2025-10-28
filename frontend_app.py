@@ -2,6 +2,7 @@ import streamlit as st
 import subprocess
 import os
 import time
+import sys
 
 LOG_FILE = "scraper.log"
 
@@ -46,8 +47,10 @@ if not st.session_state.running:
             f.write(f"🚀 Starting Walmart Sheet Updater for rows {start_row}-{end_row}...\n")
 
         # Run backend with start_row and end_row as arguments
+        
+
         process = subprocess.Popen(
-            ["python3", "walmart_sheet_updater.py", str(start_row), str(end_row)],
+            [sys.executable, "walmart_sheet_updater.py", str(start_row), str(end_row)],
             stdout=open(LOG_FILE, "a", encoding="utf-8"),
             stderr=subprocess.STDOUT,
         )
