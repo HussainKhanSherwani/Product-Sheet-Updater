@@ -38,8 +38,11 @@ start_row = st.sidebar.number_input("Start Row", min_value=2, value=2, step=1)
 end_row = st.sidebar.number_input("End Row", min_value=start_row, value=start_row, step=1)
 
 # --- Start / Stop buttons ---
+st.sidebar.markdown("---")
+
 if not st.session_state.running:
-    if st.sidebar.button("▶️ Start Update"):
+    # Show only the Start button
+    if st.sidebar.button("▶️ Start Update", use_container_width=True):
         # Clear log file
         with open(LOG_FILE, "w", encoding="utf-8") as f:
             f.write(f"🚀 Starting Walmart Sheet Updater for rows {start_row}-{end_row}...\n")
@@ -54,14 +57,17 @@ if not st.session_state.running:
         st.session_state.process = process
         st.session_state.running = True
         st.session_state.logs = read_logs()
+        st.rerun()
 
 else:
-    if st.sidebar.button("⏹ Stop Update"):
+    # Show only the Stop button
+    if st.sidebar.button("⏹ Stop Update", use_container_width=True):
         if st.session_state.process:
             st.session_state.process.terminate()
         st.session_state.running = False
         with open(LOG_FILE, "a", encoding="utf-8") as f:
             f.write("\n🛑 Update stopped by user.\n")
+        st.rerun()
 
 # --- Live Log Viewer ---
 st.subheader("🧠 Live Logs")
@@ -79,3 +85,4 @@ if st.session_state.running and st.session_state.process:
             st.success(f"✅ Walmart Sheet successfully updated for rows {start_row}-{end_row}!")
         else:
             st.error(f"❌ Update failed (exit code {retcode}). Check logs below.")
+        st.rerun()

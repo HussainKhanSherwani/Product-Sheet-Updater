@@ -28,7 +28,7 @@ log("🚀 Walmart sheet updater started...")
 # --- CONFIGURATION ---
 GCP_CREDENTIALS_FILE = 'credentials.json'
 SCRAPING_ANT_API_KEY = st.secrets["api_keys"]["scraping_ant"]
-TARGET_SHEET_URL = 'https://docs.google.com/spreadsheets/d/10RghapkcMXrvH_LzFfe36d9rSBrxY-6oK5IfUMWG4Fo/edit?gid=1224872406#gid=1224872406'
+TARGET_SHEET_URL = 'https://docs.google.com/spreadsheets/d/1miyn4Y1UZKgJRcOEwKQ6qJCG94tBUFSiGThA3AQI2TU/edit?gid=1224872406#gid=1224872406'
 
 # --- AUTHORIZATION ---
 scope = [
