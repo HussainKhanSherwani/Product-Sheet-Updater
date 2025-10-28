@@ -1,22 +1,12 @@
 import streamlit as st
 import subprocess
 import os
-import time
 import sys
 
 LOG_FILE = "scraper.log"
 
 st.set_page_config(page_title="Walmart Sheet Updater", layout="wide")
 st.title("🧾 Walmart Product Sheet Updater")
-
-# --- Auto-refresh every few seconds to show live logs ---
-refresh_rate = 5  # seconds
-st.markdown(
-    f"""
-    <meta http-equiv="refresh" content="{refresh_rate}">
-    """,
-    unsafe_allow_html=True,
-)
 
 # --- Initialize session state ---
 if "running" not in st.session_state:
@@ -47,8 +37,6 @@ if not st.session_state.running:
             f.write(f"🚀 Starting Walmart Sheet Updater for rows {start_row}-{end_row}...\n")
 
         # Run backend with start_row and end_row as arguments
-        
-
         process = subprocess.Popen(
             [sys.executable, "walmart_sheet_updater.py", str(start_row), str(end_row)],
             stdout=open(LOG_FILE, "a", encoding="utf-8"),
@@ -58,7 +46,6 @@ if not st.session_state.running:
         st.session_state.process = process
         st.session_state.running = True
         st.session_state.logs = read_logs()
-
 else:
     if st.sidebar.button("⏹ Stop Update"):
         if st.session_state.process:
@@ -69,7 +56,10 @@ else:
 
 # --- Live Log Viewer ---
 st.subheader("🧠 Live Logs")
-st.session_state.logs = read_logs()
+
+# Manual refresh button
+if st.button("🔄 Refresh Logs"):
+    st.session_state.logs = read_logs()
 
 st.text_area(
     "Process Logs",
