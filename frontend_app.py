@@ -16,6 +16,15 @@ if "logs" not in st.session_state:
 if "process" not in st.session_state:
     st.session_state.process = None
 
+# --- Auto-refresh every few seconds to show live logs ---
+refresh_rate = 60  # seconds
+st.markdown(
+    f"""
+    <meta http-equiv="refresh" content="{refresh_rate}">
+    """,
+    unsafe_allow_html=True,
+)
+
 # --- Helper to read logs safely ---
 def read_logs():
     if os.path.exists(LOG_FILE):
@@ -57,9 +66,8 @@ else:
 # --- Live Log Viewer ---
 st.subheader("🧠 Live Logs")
 
-# Manual refresh button
-if st.button("🔄 Refresh Logs"):
-    st.session_state.logs = read_logs()
+st.session_state.logs = read_logs()
+
 
 st.text_area(
     "Process Logs",
