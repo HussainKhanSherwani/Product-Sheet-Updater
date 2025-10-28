@@ -2,6 +2,7 @@ import streamlit as st
 import subprocess
 import os
 import sys
+import time
 
 LOG_FILE = "scraper.log"
 
@@ -16,36 +17,26 @@ if "logs" not in st.session_state:
 if "process" not in st.session_state:
     st.session_state.process = None
 
-# --- Auto-refresh every few seconds to show live logs ---
-refresh_rate = 60  # seconds
-st.markdown(
-    f"""
-    <meta http-equiv="refresh" content="{refresh_rate}">
-    """,
-    unsafe_allow_html=True,
-)
-
-# --- Helper to read logs safely ---
+# --- Helper: read logs safely ---
 def read_logs():
     if os.path.exists(LOG_FILE):
         with open(LOG_FILE, "r", encoding="utf-8") as f:
             return f.read()
     return "No logs yet."
 
-# --- Sidebar Inputs ---
+# --- Sidebar Controls ---
 st.sidebar.header("⚙️ Controls")
 
 start_row = st.sidebar.number_input("Start Row", min_value=2, value=2, step=1)
 end_row = st.sidebar.number_input("End Row", min_value=start_row, value=start_row, step=1)
 
-# --- Start / Stop buttons ---
+# --- Start / Stop logic ---
 if not st.session_state.running:
     if st.sidebar.button("▶️ Start Update"):
-        # Clear log file
+        # Ensure no leftover log file
         with open(LOG_FILE, "w", encoding="utf-8") as f:
-            f.write(f"🚀 Starting Walmart Sheet Updater for rows {start_row}-{end_row}...\n")
+            f.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] 🚀 Walmart sheet updater started for rows {start_row}-{end_row}...\n")
 
-        # Run backend with start_row and end_row as arguments
         process = subprocess.Popen(
             [sys.executable, "walmart_sheet_updater.py", str(start_row), str(end_row)],
             stdout=open(LOG_FILE, "a", encoding="utf-8"),
@@ -54,36 +45,54 @@ if not st.session_state.running:
 
         st.session_state.process = process
         st.session_state.running = True
-        st.session_state.logs = read_logs()
+        st.rerun()
 else:
     if st.sidebar.button("⏹ Stop Update"):
         if st.session_state.process:
             st.session_state.process.terminate()
         st.session_state.running = False
         with open(LOG_FILE, "a", encoding="utf-8") as f:
-            f.write("\n🛑 Update stopped by user.\n")
+            f.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] 🛑 Update stopped by user.\n")
+        st.rerun()
 
 # --- Live Log Viewer ---
 st.subheader("🧠 Live Logs")
 
-st.session_state.logs = read_logs()
+log_box = st.empty()
+main_stop_btn = st.empty()
 
-
-st.text_area(
-    "Process Logs",
-    st.session_state.logs,
-    height=400,
-    key="log_view",
-)
-
-# --- Process Completion Check ---
-if st.session_state.running and st.session_state.process:
-    process = st.session_state.process
-    retcode = process.poll()
-
-    if retcode is not None:  # means process finished
+if st.session_state.running:
+    # Show an inline Stop button too
+    if main_stop_btn.button("⏹ Stop Update", type="secondary"):
+        if st.session_state.process:
+            st.session_state.process.terminate()
         st.session_state.running = False
-        if retcode == 0:
-            st.success(f"✅ Walmart Sheet successfully updated for rows {start_row}-{end_row}!")
-        else:
-            st.error(f"❌ Update failed (exit code {retcode}). Check logs below.")
+        with open(LOG_FILE, "a", encoding="utf-8") as f:
+            f.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] 🛑 Update stopped by user.\n")
+        st.rerun()
+
+    # Show current logs
+    logs = read_logs()
+    log_box.text_area("Process Logs", logs, height=400, key="log_display", disabled=True)
+
+    # Check if process ended
+    if st.session_state.process and st.session_state.process.poll() is not None:
+        st.session_state.running = False
+        st.rerun()
+    else:
+        # Auto-refresh logs every few seconds
+        time.sleep(5)
+        st.rerun()
+
+else:
+    # Static log view when not running
+    logs = read_logs()
+    log_box.text_area("Process Logs", logs, height=400, key="log_display", disabled=True)
+
+# --- Completion Feedback ---
+if st.session_state.process and not st.session_state.running:
+    retcode = st.session_state.process.poll()
+    if retcode == 0:
+        st.success(f"✅ Walmart Sheet successfully updated for rows {start_row}-{end_row}!")
+    elif retcode is not None:
+        st.error(f"❌ Update failed (exit code {retcode}). Check logs below.")
