@@ -22,7 +22,7 @@ def log(msg):
 
 # Clear old logs if running new session
 open(LOG_FILE, "w").close()
-log("🚀 Walmart sheet updater started...")
+log(" Walmart sheet updater started...")
 
 
 # --- CONFIGURATION ---
@@ -50,7 +50,6 @@ if len(sys.argv) >= 3:
     start_row = int(sys.argv[1])
     end_row = int(sys.argv[2])
 
-
 #add check that start_row should be less than or equal to end_row
 if start_row > end_row:
     raise ValueError("start_row should be less than or equal to end_row")
@@ -72,7 +71,6 @@ today_stock_col = col("Today Stock")
 old_stock_col = col("Old Stock")
 buybox_col = col("BuyBox Winner")
 date_col = col("Stock Update Date")
-diff_col = col("Price Difference")
 
 # --- STEP 1: Copy Today → Old (once for all rows) ---
 log("🔁 Copying Today → Old columns...")
@@ -155,7 +153,7 @@ def parse_walmart_html(html):
         if unavailable_tag and ("Out of stock" in unavailable_tag.text or "Not available" in unavailable_tag.text):
             stock_status = "oos"
         else:
-            stock_status = "10+" if seller_tag else "oos"
+            stock_status = 100 if seller_tag else "oos"
 
     # --- Price ---
     price = None
@@ -226,8 +224,8 @@ def scrape_multiple_walmart_links(links_str):
 
         if stock == "oos":
             stock_values.append(0)
-        elif stock == "10+":
-            stock_values.append(11)
+        elif stock == 100:
+            stock_values.append(100)
         else:
             try:
                 stock_values.append(int(stock))
@@ -244,7 +242,7 @@ def scrape_multiple_walmart_links(links_str):
     final_stock = (
         "oos"
         if not stock_values or 0 in stock_values
-        else str(min(stock_values)) if min(stock_values) <= 10 else "10+"
+        else str(min(stock_values)) if min(stock_values) <= 10 else "100"
     )
     final_seller = ", ".join(sorted(sellers)) if sellers else ""
 
@@ -256,14 +254,13 @@ log("🕷 Starting scrape (max 300 items)...\n")
 batch_size = 300
 update_chunk = 2
 
-batch_prices, batch_stocks, batch_buyboxes, batch_dates, batch_diffs, batch_rows = ([] for _ in range(6))
+batch_prices, batch_stocks, batch_buyboxes, batch_dates, batch_rows = ([] for _ in range(5))
 
 for idx, row in enumerate(rows[:batch_size], start=start_row):
     url_str = row[link_col - 1].strip()
     price = ""
     stock = "oos"
     seller_name = ""
-    diff_val = ""
 
     if not url_str:
         pass
@@ -271,7 +268,6 @@ for idx, row in enumerate(rows[:batch_size], start=start_row):
         log(f"🔍 Row {idx}: {url_str}")
 
         price, stock, seller_name = scrape_multiple_walmart_links(url_str)
-
 
         # --- Get previous (old) values from sheet ---
         old_price = row[old_price_col - 1] if len(row) >= old_price_col else ""
@@ -281,22 +277,12 @@ for idx, row in enumerate(rows[:batch_size], start=start_row):
         # --- Use old values if scraping failed ---
         if not price or price == "":
             price = old_price or ""
-        if not stock or stock == "oos":
-            stock = old_stock or "oos"
+        if not stock:
+            stock = "oos"
         if not seller_name or seller_name.strip() == "":
             seller_name = old_buybox or ""
 
-        # --- Calculate difference if we have both prices ---
-        try:
-            old_val = float(old_price) if old_price else 0
-            new_val = float(price) if price else 0
-            diff_val = round(new_val - old_val, 2)
-        except ValueError:
-            diff_val = ""
-
-        log(f"✅ {idx}: price={price}, stock={stock}, buybox={seller_name}, diff={diff_val}")
-
-
+        log(f"✅ {idx}: price={price}, stock={stock}, buybox={seller_name}")
 
     time.sleep(1.5)
 
@@ -305,7 +291,6 @@ for idx, row in enumerate(rows[:batch_size], start=start_row):
     batch_stocks.append([stock])
     batch_buyboxes.append([seller_name])
     batch_dates.append([datetime.now().strftime("%Y-%m-%d %H:%M:%S")])
-    batch_diffs.append([diff_val])
     batch_rows.append(idx)
 
     if len(batch_rows) >= update_chunk:
@@ -317,11 +302,10 @@ for idx, row in enumerate(rows[:batch_size], start=start_row):
         sheet.update(f"{chr(64 + today_stock_col)}{start_row}:{chr(64 + today_stock_col)}{end_row}", batch_stocks)
         sheet.update(f"{chr(64 + buybox_col)}{start_row}:{chr(64 + buybox_col)}{end_row}", batch_buyboxes)
         sheet.update(f"{chr(64 + date_col)}{start_row}:{chr(64 + date_col)}{end_row}", batch_dates)
-        sheet.update(f"{chr(64 + diff_col)}{start_row}:{chr(64 + diff_col)}{end_row}", batch_diffs)
         log(f"✅ Updated rows {start_row}-{end_row}\n")
 
         # Clear batch
-        batch_prices, batch_stocks, batch_buyboxes, batch_dates, batch_diffs, batch_rows = ([] for _ in range(6))
+        batch_prices, batch_stocks, batch_buyboxes, batch_dates, batch_rows = ([] for _ in range(5))
 
 if len(batch_rows) > 0:
     start_row = batch_rows[0]
@@ -332,7 +316,6 @@ if len(batch_rows) > 0:
     sheet.update(f"{chr(64 + today_stock_col)}{start_row}:{chr(64 + today_stock_col)}{end_row}", batch_stocks)
     sheet.update(f"{chr(64 + buybox_col)}{start_row}:{chr(64 + buybox_col)}{end_row}", batch_buyboxes)
     sheet.update(f"{chr(64 + date_col)}{start_row}:{chr(64 + date_col)}{end_row}", batch_dates)
-    sheet.update(f"{chr(64 + diff_col)}{start_row}:{chr(64 + diff_col)}{end_row}", batch_diffs)
     log(f"✅ Updated rows {start_row}-{end_row}\n")
 
 log(f"🎉 Done! All {end_row - start_row + 1} rows scraped and updated in batches of 5.")
