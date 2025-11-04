@@ -5,6 +5,7 @@ import sys
 import signal
 
 LOG_FILE = "scraper.log"
+LOCK_FILE = "start.txt"
 
 st.set_page_config(page_title="Walmart Sheet Updater", layout="wide")
 st.title("🧾 Walmart Product Sheet Updater")
@@ -20,9 +21,7 @@ if "process" not in st.session_state:
 # --- Auto-refresh every few seconds to show live logs ---
 refresh_rate = 20  # seconds
 st.markdown(
-    f"""
-    <meta http-equiv="refresh" content="{refresh_rate}">
-    """,
+    f"""<meta http-equiv="refresh" content="{refresh_rate}">""",
     unsafe_allow_html=True,
 )
 
@@ -39,27 +38,44 @@ start_row = st.sidebar.number_input("Start Row", min_value=2, value=2, step=1)
 end_row = st.sidebar.number_input("End Row", min_value=start_row, value=start_row, step=1)
 st.sidebar.markdown("---")
 
-# --- Action Buttons (always visible) ---
+# --- Disable Start button if process is running or lock file exists ---
+is_locked = os.path.exists(LOCK_FILE) or st.session_state.running
+
+# --- Action Buttons ---
 col1, col2 = st.sidebar.columns(2)
-start_clicked = col1.button("Start", use_container_width=True)
+start_clicked = col1.button(
+    "Start",
+    use_container_width=True,
+    disabled=is_locked  # disable if locked or running
+)
 stop_clicked = col2.button("Stop", use_container_width=True)
 
 # --- Handle Start ---
 if start_clicked and not st.session_state.running:
-    # Clear old log file
-    with open(LOG_FILE, "w", encoding="utf-8") as f:
-        f.write(f"Starting Walmart Sheet Updater for rows {start_row}-{end_row}...\n")
+    if os.path.exists(LOCK_FILE):
+        st.warning("⚠️ Process already running! Please stop it before starting again.")
+    else:
+        # Create lock file
+        with open(LOCK_FILE, "w") as lock:
+            lock.write("running")
 
-    process = subprocess.Popen(
-        [sys.executable, "walmart_sheet_updater.py", str(start_row), str(end_row)],
-        stdout=open(LOG_FILE, "a", encoding="utf-8"),
-        stderr=subprocess.STDOUT,
-    )
+        # Clear old log file
+        with open(LOG_FILE, "w", encoding="utf-8") as f:
+            f.write(f"Starting Walmart Sheet Updater for rows {start_row}-{end_row}...\n")
 
-    st.session_state.process = process
-    st.session_state.running = True
-    st.session_state.logs = read_logs()
-    st.success(f" Started Walmart Sheet Updater for rows {start_row}-{end_row}!")
+        process = subprocess.Popen(
+            [sys.executable, "walmart_sheet_updater.py", str(start_row), str(end_row)],
+            stdout=open(LOG_FILE, "a", encoding="utf-8"),
+            stderr=subprocess.STDOUT,
+        )
+
+        # Update session state
+        st.session_state.process = process
+        st.session_state.running = True
+        st.session_state.logs = read_logs()
+
+        # Disable Start button immediately
+        st.rerun()
 
 # --- Handle Stop ---
 if stop_clicked:
@@ -68,6 +84,7 @@ if stop_clicked:
             os.kill(st.session_state.process.pid, signal.SIGTERM)
             with open(LOG_FILE, "a", encoding="utf-8") as f:
                 f.write("\nUpdate stopped by user.\n")
+
             st.session_state.running = False
             st.session_state.process = None
             st.warning("Process stopped by user.")
@@ -86,8 +103,15 @@ if st.session_state.running and st.session_state.process:
     retcode = st.session_state.process.poll()
     if retcode is not None:  # Process finished
         st.session_state.running = False
+
+        # Remove lock file if process ended
+        if os.path.exists(LOCK_FILE):
+            os.remove(LOCK_FILE)
+
         if retcode == 0:
-            st.success(f"Walmart Sheet successfully updated for rows {start_row}-{end_row}!")
+            st.success(f"✅ Walmart Sheet successfully updated for rows {start_row}-{end_row}!")
         else:
-            st.error(f"Update failed (exit code {retcode}). Check logs below.")
+            st.error(f"❌ Update failed (exit code {retcode}). Check logs below.")
+
         st.session_state.process = None
+        st.rerun()
