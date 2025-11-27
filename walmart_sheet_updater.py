@@ -152,8 +152,31 @@ try:
                 stock_status = "10"
         else:
             unavailable_tag = soup.find("span", class_="b mr1")
-            if unavailable_tag and ("Out of stock" in unavailable_tag.text or "Not available" in unavailable_tag.text):
-                stock_status = 0
+            # 1. Primary Check: Look at the unavailable_tag first
+            if unavailable_tag:
+                unavailable_text = unavailable_tag.get_text().strip()
+
+                # Case A: Explicit "Out of stock" -> Immediate 0
+                if "Out of stock" in unavailable_text:
+                    stock_status = 0
+                    print(f"    ↳ Detected 'Out of stock' directly.")
+                # Case B: "Not available" -> Dig deeper into fulfillment tag
+                elif "Not available" in unavailable_text:
+                    print(f"    ↳ Detected 'Not available', checking fulfillment tag...")
+                    # Look for the fulfillment tag (case-insensitive for 'shipping')
+                    fulfillment_tag = soup.find('div', attrs={'data-seo-id': re.compile(r'fulfillment-shipping-intent', re.IGNORECASE)})
+                    
+                    if fulfillment_tag:
+                        tag_text = fulfillment_tag.get_text().strip()
+                        print(f"      ↳ Fulfillment tag text: {tag_text}")
+                        # Sub-check 1: Still says out of stock
+                        if "Out of stock" in tag_text:
+                            stock_status = 0
+                            print(f"      ↳ Detected 'Out of stock' in fulfillment tag.")
+                        # Sub-check 2: Says "Arrives [Date]" -> In Stock
+                        elif "Arrives" in tag_text:
+                            stock_status = 100
+                            print(f"      ↳ Detected 'Arrives' in fulfillment tag, marking as in stock.")
             else:
                 stock_status = 100 if seller_tag else 0
 
