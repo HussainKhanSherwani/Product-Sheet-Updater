@@ -211,7 +211,7 @@ try:
                 if html:
                     break
                 log(f"      ⚠️ Fetch attempt {attempt+1} failed, retrying...")
-                time.sleep(2)
+                time.sleep(10)
 
             if not html:
                 log(f"      ❌ failed all 3 fetch attempts for {link}")
@@ -224,7 +224,7 @@ try:
                 log(f"      ⚠️ Price missing, retrying parse for {link}...")
                 retry_price = None
                 for attempt in range(2):  # two more retries
-                    time.sleep(2)
+                    time.sleep(10)
                     html_retry = fetch_html_with_scrapingant(link)
                     if not html_retry:
                         continue
