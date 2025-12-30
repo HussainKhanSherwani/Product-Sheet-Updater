@@ -3,6 +3,7 @@ import subprocess
 import os
 import sys
 import signal
+import re
 
 LOG_FILE = "scraper.log"
 LOCK_FILE = "start.txt"
@@ -18,12 +19,9 @@ if "logs" not in st.session_state:
 if "process" not in st.session_state:
     st.session_state.process = None
 
-# --- Auto-refresh every few seconds to show live logs ---
-refresh_rate = 20  # seconds
-st.markdown(
-    f"""<meta http-equiv="refresh" content="{refresh_rate}">""",
-    unsafe_allow_html=True,
-)
+# --- Auto-refresh logs ---
+refresh_rate = 60
+st.markdown(f"""<meta http-equiv="refresh" content="{refresh_rate}">""", unsafe_allow_html=True)
 
 # --- Helper to read logs safely ---
 def read_logs():
@@ -33,85 +31,108 @@ def read_logs():
     return "No logs yet."
 
 # --- Sidebar Controls ---
-st.sidebar.header(" Controls")
-start_row = st.sidebar.number_input("Start Row", min_value=2, value=2, step=1)
-end_row = st.sidebar.number_input("End Row", min_value=start_row, value=start_row, step=1)
+st.sidebar.header("⚙️ Configuration")
+
+# 1. Mode Selection
+mode = st.sidebar.radio("Select Mode:", ["Range Mode (Start-End)", "List Mode (Specific Rows)"])
+
+final_cmd_args = []
+
+if mode == "Range Mode (Start-End)":
+    start_row = st.sidebar.number_input("Start Row", min_value=2, value=2, step=1)
+    end_row = st.sidebar.number_input("End Row", min_value=start_row, value=start_row, step=1)
+    st.sidebar.info(f"Will scrape rows: {start_row} to {end_row}")
+    final_cmd_args = [str(start_row), str(end_row)]
+
+else:
+    st.sidebar.markdown("### Paste Row Numbers")
+    raw_input = st.sidebar.text_area("Enter rows (comma or new line separated)", "3, 5, 10\n20")
+    
+    # Parse input: split by comma, newline, or space
+    if raw_input:
+        # regex split by comma, newline, pipe, space
+        tokens = re.split(r'[,\s\n|]+', raw_input)
+        # filter only digits
+        valid_rows = [t for t in tokens if t.isdigit()]
+        
+        if valid_rows:
+            st.sidebar.success(f"Found {len(valid_rows)} rows: {', '.join(valid_rows[:5])}...")
+            # Create the comma-separated string for backend
+            rows_arg = ",".join(valid_rows)
+            final_cmd_args = ["list", rows_arg]
+        else:
+            st.sidebar.warning("No valid numbers found.")
+
 st.sidebar.markdown("---")
 
-# --- Disable Start button if process is running or lock file exists ---
+# --- Lock Check ---
 is_locked = os.path.exists(LOCK_FILE) or st.session_state.running
 
-# --- Action Buttons ---
+# --- Buttons ---
 col1, col2 = st.sidebar.columns(2)
-start_clicked = col1.button(
-    "Start",
-    use_container_width=True,
-    disabled=is_locked  # disable if locked or running
-)
+start_clicked = col1.button("Start", use_container_width=True, disabled=is_locked)
 stop_clicked = col2.button("Stop", use_container_width=True)
 
-# --- Handle Start ---
+# --- START Action ---
 if start_clicked and not st.session_state.running:
-    if os.path.exists(LOCK_FILE):
-        st.warning("⚠️ Process already running! Please stop it before starting again.")
+    if not final_cmd_args:
+        st.error("Please configure rows first.")
     else:
-        # Create lock file
+        # Create lock
         with open(LOCK_FILE, "w") as lock:
             lock.write("running")
 
-        # Clear old log file
+        # Clear logs
         with open(LOG_FILE, "w", encoding="utf-8") as f:
-            f.write(f"Starting Walmart Sheet Updater for rows {start_row}-{end_row}...\n")
+            f.write(f"Starting Scraper in {mode}...\n")
 
+        # Launch Backend
+        # We pass the final_cmd_args we built above
+        cmd = [sys.executable, "walmart_sheet_updater.py"] + final_cmd_args
+        
         process = subprocess.Popen(
-            [sys.executable, "walmart_sheet_updater.py", str(start_row), str(end_row)],
+            cmd,
             stdout=open(LOG_FILE, "a", encoding="utf-8"),
             stderr=subprocess.STDOUT,
         )
 
-        # Update session state
         st.session_state.process = process
         st.session_state.running = True
         st.session_state.logs = read_logs()
-
-        # Disable Start button immediately
         st.rerun()
 
-# --- Handle Stop ---
+# --- STOP Action ---
 if stop_clicked:
     if st.session_state.process:
         try:
             os.kill(st.session_state.process.pid, signal.SIGTERM)
             with open(LOG_FILE, "a", encoding="utf-8") as f:
-                f.write("\nUpdate stopped by user.\n")
-
+                f.write("\n⚠️ Stopped by user.\n")
             st.session_state.running = False
             st.session_state.process = None
-            st.warning("Process stopped by user.")
+            st.warning("Stopped.")
         except Exception as e:
-            st.error(f"Failed to stop process: {e}")
+            st.error(f"Stop failed: {e}")
     else:
-        st.warning(" No active process to stop.")
+        st.warning("Not running.")
 
-# --- Live Logs Viewer ---
-st.subheader(" Live Logs")
+# --- Logs View ---
+st.subheader("📝 Live Logs")
 st.session_state.logs = read_logs()
-st.text_area("Process Logs", st.session_state.logs, height=400, key="log_view")
+st.text_area("Logs", st.session_state.logs, height=500)
 
-# --- Check if process finished automatically ---
+# --- Auto Check Status ---
 if st.session_state.running and st.session_state.process:
     retcode = st.session_state.process.poll()
-    if retcode is not None:  # Process finished
+    if retcode is not None:
         st.session_state.running = False
-
-        # Remove lock file if process ended
         if os.path.exists(LOCK_FILE):
             os.remove(LOCK_FILE)
-
+        
         if retcode == 0:
-            st.success(f"✅ Walmart Sheet successfully updated for rows {start_row}-{end_row}!")
+            st.success("✅ Job Finished Successfully!")
         else:
-            st.error(f"❌ Update failed (exit code {retcode}). Check logs below.")
-
+            st.error(f"❌ Job Failed (Code {retcode})")
+        
         st.session_state.process = None
         st.rerun()
