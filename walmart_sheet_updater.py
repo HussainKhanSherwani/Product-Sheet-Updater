@@ -41,23 +41,57 @@ try:
     gc = gspread.authorize(credentials)
     client = gc
 
+    def safe_batch_update(worksheet, data):
+        """
+        Writes MULTIPLE ranges in ONE API call.
+        data format: [{'range': 'A1', 'values': [['v']]}, ...]
+        """
+        for attempt in range(5):
+            try:
+                # gspread batch_update takes a list of range objects
+                worksheet.batch_update(data)
+                return
+            except Exception as e:
+                if "429" in str(e) or "quota" in str(e).lower():
+                    wait_time = 10 + (attempt * 5)
+                    log(f"⏳ API Quota hit (Batch). Sleeping {wait_time}s...")
+                    time.sleep(wait_time)
+                else:
+                    raise e
+
+    # --- ARGUMENT PARSING (Range vs List) ---
+    target_rows = []
+    is_list_mode = False
+
+    # Default fallbacks
     start_row = 3
-    end_row = 3  # fallback default if run manually
+    end_row = 3
 
-    # --- Handle start_row / end_row from command-line args ---
     if len(sys.argv) >= 3:
-        start_row = int(sys.argv[1])
-        end_row = int(sys.argv[2])
-
-    if start_row > end_row:
-        raise ValueError("start_row should be less than or equal to end_row")
+        if sys.argv[1] == "list":
+            # LIST MODE: Expects comma-separated string "3,5,10"
+            is_list_mode = True
+            raw_indices = sys.argv[2].split(',')
+            # Convert to distinct integers and sort
+            target_rows = sorted(list(set([int(x) for x in raw_indices if x.strip().isdigit()])))
+            log(f"📋 Mode: Specific Rows ({len(target_rows)} rows: {target_rows})")
+        else:
+            # RANGE MODE: Expects start end
+            start_row = int(sys.argv[1])
+            end_row = int(sys.argv[2])
+            if start_row > end_row:
+                raise ValueError("start_row should be less than or equal to end_row")
+            target_rows = list(range(start_row, end_row + 1))
+            log(f"📉 Mode: Range ({start_row} to {end_row})")
+    else:
+        # Fallback default
+        target_rows = [3]
 
     # --- OPEN SHEET ---
     sheet = client.open_by_url(TARGET_SHEET_URL).get_worksheet(0)
     data = sheet.get_all_values()
     header = data[0]
-    rows = data[start_row - 1:end_row]  # skip header
-
+    
     # --- Column helper ---
     def col(name):
         return header.index(name) + 1
@@ -78,24 +112,46 @@ try:
     old_stock_col = col("Old Stock")
     buybox_col = col("BuyBox Winner")
     date_col = col("Stock Update Date")
+    flag_col = col("Flag") 
 
     # --- STEP 1: Copy Today → Old (once for all rows) ---
     log("🔁 Copying Today → Old columns...")
 
-    old_price_values = [[row[today_price_col - 1]] for row in rows[:end_row - start_row + 1]]
-    old_stock_values = [[row[today_stock_col - 1]] for row in rows[:end_row - start_row + 1]]
+    if is_list_mode:
+        # LIST MODE: Update one by one (safest for scattered rows)
+        for r_idx in target_rows:
+            if r_idx - 1 < len(data):
+                row_data = data[r_idx - 1]
+                t_price = row_data[today_price_col - 1]
+                t_stock = row_data[today_stock_col - 1]
+                
+                # OPTIMIZATION: Combine these 2 calls into 1 batch for this row
+                updates = [
+                    {'range': f"{get_col_letter(old_price_col)}{r_idx}", 'values': [[t_price]]},
+                    {'range': f"{get_col_letter(old_stock_col)}{r_idx}", 'values': [[t_stock]]}
+                ]
+                safe_batch_update(sheet, updates)
+    else:
+        # RANGE MODE: Bulk update (Faster, original logic)
+        rows_slice = data[start_row - 1:end_row]
+        old_price_values = [[row[today_price_col - 1]] for row in rows_slice]
+        old_stock_values = [[row[today_stock_col - 1]] for row in rows_slice]
 
-    log(old_price_values)
-    log(old_stock_values)
-    # --- Dynamically calculate update ranges (FIXED) ---
-    old_price_range = f"{get_col_letter(old_price_col)}{start_row}:{get_col_letter(old_price_col)}{end_row}"
-    old_stock_range = f"{get_col_letter(old_stock_col)}{start_row}:{get_col_letter(old_stock_col)}{end_row}"
-    log(f"    ↳ Old Price Range: {old_price_range}")
-    log(f"    ↳ Old Stock Range: {old_stock_range}")
+        log(old_price_values)
+        log(old_stock_values)
+        
+        old_price_range = f"{get_col_letter(old_price_col)}{start_row}:{get_col_letter(old_price_col)}{end_row}"
+        old_stock_range = f"{get_col_letter(old_stock_col)}{start_row}:{get_col_letter(old_stock_col)}{end_row}"
+        log(f"    ↳ Old Price Range: {old_price_range}")
+        log(f"    ↳ Old Stock Range: {old_stock_range}")
 
-    # --- Push updates ---
-    sheet.update(old_price_range, old_price_values)
-    sheet.update(old_stock_range, old_stock_values)
+        # --- Push updates using SAFE batch ---
+        # Note: batch_update takes a LIST of range objects
+        updates = [
+            {'range': old_price_range, 'values': old_price_values},
+            {'range': old_stock_range, 'values': old_stock_values}
+        ]
+        safe_batch_update(sheet, updates)
 
     log("✅ Old Price and Old Stock columns updated.\n")
     time.sleep(2)
@@ -269,18 +325,31 @@ try:
         return final_price, final_stock, final_seller
 
     # --- STEP 2: Scraping Loop ---
-    log("🕷 Starting scrape (max 300 items)...\n")
-    batch_size = 300
+    log(f"🕷 Starting scrape for {len(target_rows)} rows...\n")
+    batch_size = 300 
     update_chunk = 2
+    
+    if is_list_mode:
+        update_chunk = 1
 
-    batch_prices, batch_stocks, batch_buyboxes, batch_dates, batch_rows = ([] for _ in range(5))
-    failed_rows_indices = []  # NEW: Track failed rows
+    batch_prices, batch_stocks, batch_buyboxes, batch_dates, batch_rows, batch_flags = ([] for _ in range(6))
+    failed_rows_indices = []
 
-    for idx, row in enumerate(rows[:batch_size], start=start_row):
+    for i, idx in enumerate(target_rows):
+        if i >= batch_size: 
+            break
+            
+        if idx - 1 >= len(data):
+            log(f"⚠️ Row {idx} out of bounds, skipping.")
+            continue
+            
+        row = data[idx - 1] 
+        
         url_str = row[link_col - 1].strip()
         price = ""
         stock = 0
         seller_name = ""
+        flag_status = "SUCCESSFUL" 
 
         if not url_str:
             pass
@@ -289,12 +358,11 @@ try:
             price, stock, seller_name = scrape_multiple_walmart_links(url_str)
             print(f"🔍 Row {idx}: price: {price}, stock: {stock}")
 
-            # NEW: If price is missing (failed scrape), add to tracking list
             if price == "" or price is None:
                 log(f"⚠️ Row {idx} failed to get price. Added to retry list.")
                 failed_rows_indices.append(idx)
+                flag_status = "FAILED: Scraper Auto-Retry Again"
 
-            # --- Fallback to Old Values ---
             old_price = row[old_price_col - 1] if len(row) >= old_price_col else ""
             old_stock = row[old_stock_col - 1] if len(row) >= old_stock_col else ""
             old_buybox = row[buybox_col - 1] if len(row) >= buybox_col else ""
@@ -306,57 +374,74 @@ try:
             if not seller_name or seller_name.strip() == "":
                 seller_name = old_buybox or ""
 
-            log(f"✅ {idx}: price={price}, stock={stock}, buybox={seller_name}")
+            log(f"✅ {idx}: price={price}, stock={stock}, buybox={seller_name}, flag={flag_status}")
 
-        time.sleep(3) # Delay between rows
+        time.sleep(3) 
 
-        # Append to batch
-        batch_prices.append([price or ""])
-        batch_stocks.append([stock])
-        batch_buyboxes.append([seller_name])
-        batch_dates.append([datetime.now().strftime("%Y-%m-%d %H:%M:%S")])
-        batch_rows.append(idx)
+        # Handle writing to sheet based on mode
+        if is_list_mode:
+            # LIST MODE: Use SINGLE BATCH for the whole row
+            # This constructs ONE API call to update all 5 disconnected cells
+            row_updates = [
+                {'range': f"{get_col_letter(today_price_col)}{idx}", 'values': [[price]]},
+                {'range': f"{get_col_letter(today_stock_col)}{idx}", 'values': [[stock]]},
+                {'range': f"{get_col_letter(buybox_col)}{idx}", 'values': [[seller_name]]},
+                {'range': f"{get_col_letter(date_col)}{idx}", 'values': [[datetime.now().strftime("%Y-%m-%d %H:%M:%S")]]},
+                {'range': f"{get_col_letter(flag_col)}{idx}", 'values': [[flag_status]]}
+            ]
+            safe_batch_update(sheet, row_updates)
+            
+        else:
+            # RANGE MODE: Use Batch Accumulation
+            batch_prices.append([price or ""])
+            batch_stocks.append([stock])
+            batch_buyboxes.append([seller_name])
+            batch_dates.append([datetime.now().strftime("%Y-%m-%d %H:%M:%S")])
+            batch_flags.append([flag_status])
+            batch_rows.append(idx)
 
-        if len(batch_rows) >= update_chunk:
-            start_row = batch_rows[0]
-            end_row = batch_rows[-1]
-            log(f"📤 Writing rows {start_row}-{end_row}...")
-            # --- Perform all updates in this batch (FIXED) ---
-            sheet.update(f"{get_col_letter(today_price_col)}{start_row}:{get_col_letter(today_price_col)}{end_row}", batch_prices)
-            sheet.update(f"{get_col_letter(today_stock_col)}{start_row}:{get_col_letter(today_stock_col)}{end_row}", batch_stocks)
-            sheet.update(f"{get_col_letter(buybox_col)}{start_row}:{get_col_letter(buybox_col)}{end_row}", batch_buyboxes)
-            sheet.update(f"{get_col_letter(date_col)}{start_row}:{get_col_letter(date_col)}{end_row}", batch_dates)
-            log(f"✅ Updated rows {start_row}-{end_row}\n")
+            if len(batch_rows) >= update_chunk:
+                s_row, e_row = batch_rows[0], batch_rows[-1]
+                log(f"📤 Writing rows {s_row}-{e_row}...")
+                
+                # OPTIMIZATION: Combine all column updates into one batch call
+                chunk_updates = [
+                    {'range': f"{get_col_letter(today_price_col)}{s_row}:{get_col_letter(today_price_col)}{e_row}", 'values': batch_prices},
+                    {'range': f"{get_col_letter(today_stock_col)}{s_row}:{get_col_letter(today_stock_col)}{e_row}", 'values': batch_stocks},
+                    {'range': f"{get_col_letter(buybox_col)}{s_row}:{get_col_letter(buybox_col)}{e_row}", 'values': batch_buyboxes},
+                    {'range': f"{get_col_letter(date_col)}{s_row}:{get_col_letter(date_col)}{e_row}", 'values': batch_dates},
+                    {'range': f"{get_col_letter(flag_col)}{s_row}:{get_col_letter(flag_col)}{e_row}", 'values': batch_flags}
+                ]
+                safe_batch_update(sheet, chunk_updates)
+                
+                log(f"✅ Updated rows {s_row}-{e_row}\n")
 
-            # Clear batch
-            batch_prices, batch_stocks, batch_buyboxes, batch_dates, batch_rows = ([] for _ in range(5))
+                batch_prices, batch_stocks, batch_buyboxes, batch_dates, batch_rows, batch_flags = ([] for _ in range(6))
 
-    if len(batch_rows) > 0:
-        start_row = batch_rows[0]
-        end_row = batch_rows[-1]
-        log(f"📤 Writing final rows {start_row}-{end_row}...")
-        # --- Perform all updates in this batch (FIXED) ---
-        sheet.update(f"{get_col_letter(today_price_col)}{start_row}:{get_col_letter(today_price_col)}{end_row}", batch_prices)
-        sheet.update(f"{get_col_letter(today_stock_col)}{start_row}:{get_col_letter(today_stock_col)}{end_row}", batch_stocks)
-        sheet.update(f"{get_col_letter(buybox_col)}{start_row}:{get_col_letter(buybox_col)}{end_row}", batch_buyboxes)
-        sheet.update(f"{get_col_letter(date_col)}{start_row}:{get_col_letter(date_col)}{end_row}", batch_dates)
-        log(f"✅ Updated rows {start_row}-{end_row}\n")
+    if not is_list_mode and len(batch_rows) > 0:
+        s_row, e_row = batch_rows[0], batch_rows[-1]
+        log(f"📤 Writing final rows {s_row}-{e_row}...")
+        
+        final_updates = [
+            {'range': f"{get_col_letter(today_price_col)}{s_row}:{get_col_letter(today_price_col)}{e_row}", 'values': batch_prices},
+            {'range': f"{get_col_letter(today_stock_col)}{s_row}:{get_col_letter(today_stock_col)}{e_row}", 'values': batch_stocks},
+            {'range': f"{get_col_letter(buybox_col)}{s_row}:{get_col_letter(buybox_col)}{e_row}", 'values': batch_buyboxes},
+            {'range': f"{get_col_letter(date_col)}{s_row}:{get_col_letter(date_col)}{e_row}", 'values': batch_dates},
+            {'range': f"{get_col_letter(flag_col)}{s_row}:{get_col_letter(flag_col)}{e_row}", 'values': batch_flags}
+        ]
+        safe_batch_update(sheet, final_updates)
+        log(f"✅ Updated rows {s_row}-{e_row}\n")
 
-    log(f"🎉 Done! All {end_row - start_row + 1} rows scraped and updated in batches of 5.")
+    log(f"🎉 Done! All rows scraped.")
 
     # --- NEW: RETRY PHASE ---
+    final_failed_indices = [] # Track rows that failed AFTER retry
+
     if failed_rows_indices:
         log(f"\n🔄 --- RETRY PHASE: Attempting {len(failed_rows_indices)} failed rows again ---")
         log(f"Failed Rows Indices: {failed_rows_indices}")
-        # We reuse batch lists for the retry updates
-        # batch_prices, batch_stocks, batch_buyboxes, batch_dates, batch_rows = ([] for _ in range(5)) # [REMOVED]
         
         for idx in failed_rows_indices:
-            # We must fetch the URL again from the original data (idx is 1-based, data is 0-based)
-            # data includes header, so idx 1 is data[0]. Wait, rows started at start_row.
-            # Easiest way: just grab from the 'data' variable which holds the WHOLE sheet.
-            # data[0] is header. data[1] is Row 2. So data[idx-1] is Row idx.
-            
             try:
                 row_data = data[idx - 1]
                 url_str = row_data[link_col - 1].strip()
@@ -369,19 +454,34 @@ try:
                 if price and price != "":
                     log(f"✅ Retry SUCCESS for Row {idx}! New Price: {price}")
                     
-                    # Update this SINGLE row immediately to ensure it saves
-                    # (We could batch, but for retries, immediate safety is often better)
-                    sheet.update_cell(idx, today_price_col, price)
-                    sheet.update_cell(idx, today_stock_col, stock)
-                    sheet.update_cell(idx, buybox_col, seller_name)
-                    sheet.update_cell(idx, date_col, datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+                    # SINGLE BATCH Update for Retry
+                    retry_updates = [
+                        {'range': f"{get_col_letter(today_price_col)}{idx}", 'values': [[price]]},
+                        {'range': f"{get_col_letter(today_stock_col)}{idx}", 'values': [[stock]]},
+                        {'range': f"{get_col_letter(buybox_col)}{idx}", 'values': [[seller_name]]},
+                        {'range': f"{get_col_letter(date_col)}{idx}", 'values': [[datetime.now().strftime("%Y-%m-%d %H:%M:%S")]]},
+                        {'range': f"{get_col_letter(flag_col)}{idx}", 'values': [["SUCCESSFUL"]]}
+                    ]
+                    safe_batch_update(sheet, retry_updates)
+                    
                 else:
                     log(f"❌ Retry FAILED again for Row {idx}. Leaving fallback values.")
+                    final_failed_indices.append(idx) # Add to final list
+                    
+                    # Update Flag Only
+                    safe_batch_update(sheet, [{'range': f"{get_col_letter(flag_col)}{idx}", 'values': [["FAILED: Manual Entry Required"]]}])
             
             except Exception as e:
                 log(f"⚠️ Error during retry for row {idx}: {e}")
+                final_failed_indices.append(idx) # Assume fail on error
             
             time.sleep(3) # Courtesy delay in retry loop
+
+    # --- FINAL REPORT ---
+    if final_failed_indices:
+        failed_str = ",".join(map(str, sorted(final_failed_indices)))
+        log(f"\n⚠️ FINAL FAILED ROWS: {failed_str}")
+        print(f"⚠️ FINAL FAILED ROWS: {failed_str}")
 
     log(f"🎉 Done! All rows processed.")
     if os.path.exists("start.txt"):
