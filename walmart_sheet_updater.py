@@ -10,7 +10,6 @@ import sys
 import streamlit as st
 import os
 
-
 # --- CONFIGURATION ---
 try:
     LOG_FILE = "scraper.log"
@@ -25,7 +24,6 @@ try:
     # Clear old logs if running new session
     open(LOG_FILE, "w").close()
     log(" Walmart sheet updater started...")
-
 
     # --- CONFIGURATION ---
     GCP_CREDENTIALS_FILE = 'credentials.json'
@@ -43,16 +41,14 @@ try:
     gc = gspread.authorize(credentials)
     client = gc
 
-
     start_row = 3
     end_row = 3  # fallback default if run manually
 
-    # --- Handle start_row / end_row from command-line args (for Streamlit integration) ---
+    # --- Handle start_row / end_row from command-line args ---
     if len(sys.argv) >= 3:
         start_row = int(sys.argv[1])
         end_row = int(sys.argv[2])
 
-    #add check that start_row should be less than or equal to end_row
     if start_row > end_row:
         raise ValueError("start_row should be less than or equal to end_row")
 
@@ -66,6 +62,15 @@ try:
     def col(name):
         return header.index(name) + 1
 
+    # --- Helper to convert column number to letter (Handles A-Z, AA-ZZ, etc.) ---
+    def get_col_letter(col_idx):
+        """Converts 1 -> A, 27 -> AA, 28 -> AB"""
+        string = ""
+        while col_idx > 0:
+            col_idx, remainder = divmod(col_idx - 1, 26)
+            string = chr(65 + remainder) + string
+        return string
+
     link_col = col("Walmart Link")
     today_price_col = col("Today Price")
     old_price_col = col("Old Price")
@@ -77,15 +82,14 @@ try:
     # --- STEP 1: Copy Today → Old (once for all rows) ---
     log("🔁 Copying Today → Old columns...")
 
-    # --- Prepare old data to copy ---
     old_price_values = [[row[today_price_col - 1]] for row in rows[:end_row - start_row + 1]]
     old_stock_values = [[row[today_stock_col - 1]] for row in rows[:end_row - start_row + 1]]
 
     log(old_price_values)
     log(old_stock_values)
-    # --- Dynamically calculate update ranges ---
-    old_price_range = f"{chr(64 + old_price_col)}{start_row}:{chr(64 + old_price_col)}{end_row}"
-    old_stock_range = f"{chr(64 + old_stock_col)}{start_row}:{chr(64 + old_stock_col)}{end_row}"
+    # --- Dynamically calculate update ranges (FIXED) ---
+    old_price_range = f"{get_col_letter(old_price_col)}{start_row}:{get_col_letter(old_price_col)}{end_row}"
+    old_stock_range = f"{get_col_letter(old_stock_col)}{start_row}:{get_col_letter(old_stock_col)}{end_row}"
     log(f"    ↳ Old Price Range: {old_price_range}")
     log(f"    ↳ Old Stock Range: {old_stock_range}")
 
@@ -123,10 +127,9 @@ try:
     def parse_walmart_html(html):
         soup = BeautifulSoup(html, "html.parser")
 
-        # --- Seller info (Buy Box) ---
+        # Seller
         seller_tag = soup.find("span", attrs={"data-testid": "product-seller-info"})
         seller_name = ""
-
         if seller_tag:
             link_tag = seller_tag.find("a", attrs={"data-testid": "seller-name-link"})
             if link_tag:
@@ -135,14 +138,9 @@ try:
                 seller_name = seller_tag.get_text(strip=True).replace("Sold and shipped by", "").strip()
             seller_name = re.sub(r'\.com.*$', '', seller_name).strip()
 
-        # --- Stock status ---
-        stock_status = 0  # default
-
-        # Check for low stock span directly
-        low_stock_span = soup.find(
-            "span",
-            class_="w_yTSq f7 f6-hdkp lh-solid lh-title-hdkp b dark-red w_0aYG w_MwbK"
-        )
+        # Stock
+        stock_status = 0
+        low_stock_span = soup.find("span", class_="w_yTSq f7 f6-hdkp lh-solid lh-title-hdkp b dark-red w_0aYG w_MwbK")
         if low_stock_span:
             span_text = low_stock_span.get_text(strip=True)
             match = re.search(r"(\d+)", span_text)
@@ -165,7 +163,6 @@ try:
                     print(f"    ↳ Detected 'Not available', checking fulfillment tag...")
                     # Look for the fulfillment tag (case-insensitive for 'shipping')
                     fulfillment_tag = soup.find('div', attrs={'data-seo-id': re.compile(r'fulfillment-shipping-intent', re.IGNORECASE)})
-                    
                     if fulfillment_tag:
                         tag_text = fulfillment_tag.get_text().strip()
                         print(f"      ↳ Fulfillment tag text: {tag_text}")
@@ -180,7 +177,7 @@ try:
             else:
                 stock_status = 100 if seller_tag else 0
 
-        # --- Price ---
+        # Price
         price = None
         price_tag = soup.find("span", attrs={"itemprop": "price", "data-seo-id": "hero-price"})
         if price_tag:
@@ -220,10 +217,11 @@ try:
             # --- Parse page (with retry if price missing) ---
             price, stock, seller = parse_walmart_html(html)
 
+            # Retry price parse logic
             if price is None:
                 log(f"      ⚠️ Price missing, retrying parse for {link}...")
                 retry_price = None
-                for attempt in range(2):  # two more retries
+                for attempt in range(2):
                     time.sleep(10)
                     html_retry = fetch_html_with_scrapingant(link)
                     if not html_retry:
@@ -237,16 +235,14 @@ try:
                     log(f"      ❌ Price still missing after 3 attempts for {link}")
                     price = ""
 
-            # --- Aggregate results ---
             if price:
                 try:
                     total_price += float(price)
                 except:
                     pass
-
             if seller:
                 sellers.add(seller)
-
+            
             if stock == 0:
                 stock_values.append(0)
             elif stock == 100:
@@ -257,9 +253,8 @@ try:
                 except:
                     stock_values.append(10)
 
-            time.sleep(1.2)
+            time.sleep(5) # Delay between links in same cell
 
-        # --- Aggregate logic across all links ---
         if not links:
             return "", 0, ""
 
@@ -273,13 +268,13 @@ try:
 
         return final_price, final_stock, final_seller
 
-
-    # --- STEP 2: Scraping Loop (limit 300, batch write every 5) ---
+    # --- STEP 2: Scraping Loop ---
     log("🕷 Starting scrape (max 300 items)...\n")
     batch_size = 300
     update_chunk = 2
 
     batch_prices, batch_stocks, batch_buyboxes, batch_dates, batch_rows = ([] for _ in range(5))
+    failed_rows_indices = []  # NEW: Track failed rows
 
     for idx, row in enumerate(rows[:batch_size], start=start_row):
         url_str = row[link_col - 1].strip()
@@ -291,15 +286,19 @@ try:
             pass
         else:
             log(f"🔍 Row {idx}: {url_str}")
-
             price, stock, seller_name = scrape_multiple_walmart_links(url_str)
-            print(f"🔍 Row {idx}: {url_str} - price: {price}, stock: {stock}, seller: {seller_name}")
-            # --- Get previous (old) values from sheet ---
+            print(f"🔍 Row {idx}: price: {price}, stock: {stock}")
+
+            # NEW: If price is missing (failed scrape), add to tracking list
+            if price == "" or price is None:
+                log(f"⚠️ Row {idx} failed to get price. Added to retry list.")
+                failed_rows_indices.append(idx)
+
+            # --- Fallback to Old Values ---
             old_price = row[old_price_col - 1] if len(row) >= old_price_col else ""
             old_stock = row[old_stock_col - 1] if len(row) >= old_stock_col else ""
             old_buybox = row[buybox_col - 1] if len(row) >= buybox_col else ""
 
-            # --- Use old values if scraping failed ---
             if not price or price == "":
                 price = old_price or ""
             if not stock:
@@ -309,7 +308,7 @@ try:
 
             log(f"✅ {idx}: price={price}, stock={stock}, buybox={seller_name}")
 
-        time.sleep(1.5)
+        time.sleep(3) # Delay between rows
 
         # Append to batch
         batch_prices.append([price or ""])
@@ -322,11 +321,11 @@ try:
             start_row = batch_rows[0]
             end_row = batch_rows[-1]
             log(f"📤 Writing rows {start_row}-{end_row}...")
-            # --- Perform all updates in this batch ---
-            sheet.update(f"{chr(64 + today_price_col)}{start_row}:{chr(64 + today_price_col)}{end_row}", batch_prices)
-            sheet.update(f"{chr(64 + today_stock_col)}{start_row}:{chr(64 + today_stock_col)}{end_row}", batch_stocks)
-            sheet.update(f"{chr(64 + buybox_col)}{start_row}:{chr(64 + buybox_col)}{end_row}", batch_buyboxes)
-            sheet.update(f"{chr(64 + date_col)}{start_row}:{chr(64 + date_col)}{end_row}", batch_dates)
+            # --- Perform all updates in this batch (FIXED) ---
+            sheet.update(f"{get_col_letter(today_price_col)}{start_row}:{get_col_letter(today_price_col)}{end_row}", batch_prices)
+            sheet.update(f"{get_col_letter(today_stock_col)}{start_row}:{get_col_letter(today_stock_col)}{end_row}", batch_stocks)
+            sheet.update(f"{get_col_letter(buybox_col)}{start_row}:{get_col_letter(buybox_col)}{end_row}", batch_buyboxes)
+            sheet.update(f"{get_col_letter(date_col)}{start_row}:{get_col_letter(date_col)}{end_row}", batch_dates)
             log(f"✅ Updated rows {start_row}-{end_row}\n")
 
             # Clear batch
@@ -336,16 +335,58 @@ try:
         start_row = batch_rows[0]
         end_row = batch_rows[-1]
         log(f"📤 Writing final rows {start_row}-{end_row}...")
-        # --- Perform all updates in this batch ---
-        sheet.update(f"{chr(64 + today_price_col)}{start_row}:{chr(64 + today_price_col)}{end_row}", batch_prices)
-        sheet.update(f"{chr(64 + today_stock_col)}{start_row}:{chr(64 + today_stock_col)}{end_row}", batch_stocks)
-        sheet.update(f"{chr(64 + buybox_col)}{start_row}:{chr(64 + buybox_col)}{end_row}", batch_buyboxes)
-        sheet.update(f"{chr(64 + date_col)}{start_row}:{chr(64 + date_col)}{end_row}", batch_dates)
+        # --- Perform all updates in this batch (FIXED) ---
+        sheet.update(f"{get_col_letter(today_price_col)}{start_row}:{get_col_letter(today_price_col)}{end_row}", batch_prices)
+        sheet.update(f"{get_col_letter(today_stock_col)}{start_row}:{get_col_letter(today_stock_col)}{end_row}", batch_stocks)
+        sheet.update(f"{get_col_letter(buybox_col)}{start_row}:{get_col_letter(buybox_col)}{end_row}", batch_buyboxes)
+        sheet.update(f"{get_col_letter(date_col)}{start_row}:{get_col_letter(date_col)}{end_row}", batch_dates)
         log(f"✅ Updated rows {start_row}-{end_row}\n")
 
     log(f"🎉 Done! All {end_row - start_row + 1} rows scraped and updated in batches of 5.")
+
+    # --- NEW: RETRY PHASE ---
+    if failed_rows_indices:
+        log(f"\n🔄 --- RETRY PHASE: Attempting {len(failed_rows_indices)} failed rows again ---")
+        log(f"Failed Rows Indices: {failed_rows_indices}")
+        # We reuse batch lists for the retry updates
+        # batch_prices, batch_stocks, batch_buyboxes, batch_dates, batch_rows = ([] for _ in range(5)) # [REMOVED]
+        
+        for idx in failed_rows_indices:
+            # We must fetch the URL again from the original data (idx is 1-based, data is 0-based)
+            # data includes header, so idx 1 is data[0]. Wait, rows started at start_row.
+            # Easiest way: just grab from the 'data' variable which holds the WHOLE sheet.
+            # data[0] is header. data[1] is Row 2. So data[idx-1] is Row idx.
+            
+            try:
+                row_data = data[idx - 1]
+                url_str = row_data[link_col - 1].strip()
+                log(f"🔄 Retrying Row {idx}: {url_str}")
+                
+                # Scrape again
+                price, stock, seller_name = scrape_multiple_walmart_links(url_str)
+                
+                # Check if successful THIS time
+                if price and price != "":
+                    log(f"✅ Retry SUCCESS for Row {idx}! New Price: {price}")
+                    
+                    # Update this SINGLE row immediately to ensure it saves
+                    # (We could batch, but for retries, immediate safety is often better)
+                    sheet.update_cell(idx, today_price_col, price)
+                    sheet.update_cell(idx, today_stock_col, stock)
+                    sheet.update_cell(idx, buybox_col, seller_name)
+                    sheet.update_cell(idx, date_col, datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+                else:
+                    log(f"❌ Retry FAILED again for Row {idx}. Leaving fallback values.")
+            
+            except Exception as e:
+                log(f"⚠️ Error during retry for row {idx}: {e}")
+            
+            time.sleep(3) # Courtesy delay in retry loop
+
+    log(f"🎉 Done! All rows processed.")
     if os.path.exists("start.txt"):
         os.remove("start.txt")
+
 except Exception as e:
     log(f" Fatal error: {e}")
     if os.path.exists("start.txt"):
