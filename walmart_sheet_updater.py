@@ -354,7 +354,7 @@ try:
     log(f"🕷 Starting scrape for {len(target_rows)} rows in blocks of 100...\n")
     batch_size = 3000 
     failed_rows_indices = []
-    block_size = 100
+    block_size = 50
 
     # Process in blocks of 100
     for b in range(0, len(target_rows), block_size):
