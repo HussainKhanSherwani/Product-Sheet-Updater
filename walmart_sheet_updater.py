@@ -164,7 +164,7 @@ try:
         scrape_do_url = "http://api.scrape.do/?url={}&token={}".format(targetUrl, SCRAPER_DO_API_KEY)
         
         try:
-            response = requests.request("get", scrape_do_url, timeout=30)
+            response = requests.request("get", scrape_do_url, timeout=100)
             if response.status_code != 200:
                 log(f"❌ Scraper.do failed ({response.status_code}) for {url}")
                 return None
