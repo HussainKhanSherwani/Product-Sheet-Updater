@@ -54,7 +54,7 @@ try:
                 return
             except Exception as e:
                 if "429" in str(e) or "quota" in str(e).lower():
-                    wait_time = 10 + (attempt * 5)
+                    wait_time = 15 + (attempt * 10)
                     log(f"⏳ API Quota hit (Batch). Sleeping {wait_time}s...")
                     time.sleep(wait_time)
                 else:
@@ -164,7 +164,7 @@ try:
         scrape_do_url = "http://api.scrape.do/?url={}&token={}".format(targetUrl, SCRAPER_DO_API_KEY)
         
         try:
-            response = requests.request("get", scrape_do_url)
+            response = requests.request("get", scrape_do_url, timeout=30)
             if response.status_code != 200:
                 log(f"❌ Scraper.do failed ({response.status_code}) for {url}")
                 return None
@@ -331,6 +331,7 @@ try:
             
         log(f"🔍 Row {idx}: {url_str}")
         price, stock, seller_name = scrape_multiple_walmart_links(url_str)
+        print(f"🔍 Row {idx}: price: {price}, stock: {stock}")
         
         flag_status = "SUCCESSFUL"
         if price == "" or price is None:
@@ -350,81 +351,48 @@ try:
         return idx, price, stock, seller_name, flag_status
 
     # --- STEP 2: Scraping Loop ---
-    log(f"🕷 Starting scrape for {len(target_rows)} rows...\n")
+    log(f"🕷 Starting scrape for {len(target_rows)} rows in blocks of 100...\n")
     batch_size = 3000 
-    update_chunk = 2
-    
-    if is_list_mode:
-        update_chunk = 1
-
-    batch_prices, batch_stocks, batch_buyboxes, batch_dates, batch_rows, batch_flags = ([] for _ in range(6))
     failed_rows_indices = []
+    block_size = 100
 
-    # Use ThreadPoolExecutor for 5 concurrent requests
-    with ThreadPoolExecutor(max_workers=5) as executor:
-        results = list(executor.map(process_row, target_rows[:batch_size]))
+    # Process in blocks of 100
+    for b in range(0, len(target_rows), block_size):
+        block = target_rows[b:b + block_size]
+        log(f"📦 Processing Block: {block[0]} to {block[-1]}")
+        
+        # Use ThreadPoolExecutor for 5 concurrent requests within this block
+        with ThreadPoolExecutor(max_workers=5) as executor:
+            results = list(executor.map(process_row, block))
 
-    for idx, price, stock, seller_name, flag_status in results:
-        if flag_status == "OUT_OF_BOUNDS":
-            log(f"⚠️ Row {idx} out of bounds, skipping.")
-            continue
-            
-        if flag_status == "FAILED: Scraper Auto-Retry Again":
-            log(f"⚠️ Row {idx} failed to get price. Added to retry list.")
-            failed_rows_indices.append(idx)
+        # Collect all updates for this block of 100
+        block_updates = []
+        for idx, price, stock, seller_name, flag_status in results:
+            if flag_status == "OUT_OF_BOUNDS":
+                log(f"⚠️ Row {idx} out of bounds, skipping.")
+                continue
+                
+            if flag_status == "FAILED: Scraper Auto-Retry Again":
+                log(f"⚠️ Row {idx} failed to get price. Added to retry list.")
+                failed_rows_indices.append(idx)
 
-        log(f"✅ {idx}: price={price}, stock={stock}, buybox={seller_name}, flag={flag_status}")
+            log(f"✅ {idx}: price={price}, stock={stock}, buybox={seller_name}, flag={flag_status}")
 
-        # Handle writing to sheet based on mode
-        if is_list_mode:
-            # LIST MODE: Use SINGLE BATCH for the whole row
-            row_updates = [
+            # Handle building the updates list for the block
+            ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            block_updates.extend([
                 {'range': f"{get_col_letter(today_price_col)}{idx}", 'values': [[price]]},
                 {'range': f"{get_col_letter(today_stock_col)}{idx}", 'values': [[stock]]},
                 {'range': f"{get_col_letter(buybox_col)}{idx}", 'values': [[seller_name]]},
-                {'range': f"{get_col_letter(date_col)}{idx}", 'values': [[datetime.now().strftime("%Y-%m-%d %H:%M:%S")]]},
+                {'range': f"{get_col_letter(date_col)}{idx}", 'values': [[ts]]},
                 {'range': f"{get_col_letter(flag_col)}{idx}", 'values': [[flag_status]]}
-            ]
-            safe_batch_update(sheet, row_updates)
-            
-        else:
-            # RANGE MODE: Use Batch Accumulation
-            batch_prices.append([price or ""])
-            batch_stocks.append([stock])
-            batch_buyboxes.append([seller_name])
-            batch_dates.append([datetime.now().strftime("%Y-%m-%d %H:%M:%S")])
-            batch_flags.append([flag_status])
-            batch_rows.append(idx)
+            ])
 
-            if len(batch_rows) >= update_chunk:
-                s_row, e_row = batch_rows[0], batch_rows[-1]
-                log(f"📤 Writing rows {s_row}-{e_row}...")
-                
-                chunk_updates = [
-                    {'range': f"{get_col_letter(today_price_col)}{s_row}:{get_col_letter(today_price_col)}{e_row}", 'values': batch_prices},
-                    {'range': f"{get_col_letter(today_stock_col)}{s_row}:{get_col_letter(today_stock_col)}{e_row}", 'values': batch_stocks},
-                    {'range': f"{get_col_letter(buybox_col)}{s_row}:{get_col_letter(buybox_col)}{e_row}", 'values': batch_buyboxes},
-                    {'range': f"{get_col_letter(date_col)}{s_row}:{get_col_letter(date_col)}{e_row}", 'values': batch_dates},
-                    {'range': f"{get_col_letter(flag_col)}{s_row}:{get_col_letter(flag_col)}{e_row}", 'values': batch_flags}
-                ]
-                safe_batch_update(sheet, chunk_updates)
-                
-                log(f"✅ Updated rows {s_row}-{e_row}\n")
-                batch_prices, batch_stocks, batch_buyboxes, batch_dates, batch_rows, batch_flags = ([] for _ in range(6))
-
-    if not is_list_mode and len(batch_rows) > 0:
-        s_row, e_row = batch_rows[0], batch_rows[-1]
-        log(f"📤 Writing final rows {s_row}-{e_row}...")
-        
-        final_updates = [
-            {'range': f"{get_col_letter(today_price_col)}{s_row}:{get_col_letter(today_price_col)}{e_row}", 'values': batch_prices},
-            {'range': f"{get_col_letter(today_stock_col)}{s_row}:{get_col_letter(today_stock_col)}{e_row}", 'values': batch_stocks},
-            {'range': f"{get_col_letter(buybox_col)}{s_row}:{get_col_letter(buybox_col)}{e_row}", 'values': batch_buyboxes},
-            {'range': f"{get_col_letter(date_col)}{s_row}:{get_col_letter(date_col)}{e_row}", 'values': batch_dates},
-            {'range': f"{get_col_letter(flag_col)}{s_row}:{get_col_letter(flag_col)}{e_row}", 'values': batch_flags}
-        ]
-        safe_batch_update(sheet, final_updates)
-        log(f"✅ Updated rows {s_row}-{e_row}\n")
+        # Batch Write the entire block of 100 to the sheet
+        if block_updates:
+            log(f"📤 Writing Block ({len(block)} rows) to Google Sheets...")
+            safe_batch_update(sheet, block_updates)
+            log(f"✅ Block complete.\n")
 
     log(f"🎉 Done! All rows scraped.")
 
@@ -442,6 +410,8 @@ try:
             try:
                 if price and price != "":
                     log(f"✅ Retry SUCCESS for Row {idx}! New Price: {price}")
+                    
+                    # SINGLE BATCH Update for Retry
                     retry_updates = [
                         {'range': f"{get_col_letter(today_price_col)}{idx}", 'values': [[price]]},
                         {'range': f"{get_col_letter(today_stock_col)}{idx}", 'values': [[stock]]},
@@ -450,6 +420,7 @@ try:
                         {'range': f"{get_col_letter(flag_col)}{idx}", 'values': [["SUCCESSFUL"]]}
                     ]
                     safe_batch_update(sheet, retry_updates)
+                    
                 else:
                     log(f"❌ Retry FAILED again for Row {idx}. Leaving fallback values.")
                     final_failed_indices.append(idx)
