@@ -319,7 +319,7 @@ try:
 
     # --- STEP 2: Scraping Loop ---
     log(f"🕷 Starting scrape for {len(target_rows)} rows...\n")
-    batch_size = 300 
+    batch_size = 3000 
     update_chunk = 2
     
     if is_list_mode:
