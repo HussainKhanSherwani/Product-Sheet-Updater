@@ -1,7 +1,7 @@
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 from bs4 import BeautifulSoup
-import http.client
+import requests
 import urllib.parse
 import re
 import time
@@ -27,7 +27,7 @@ try:
 
     # --- CONFIGURATION ---
     GCP_CREDENTIALS_FILE = 'credentials.json'
-    SCRAPING_ANT_API_KEY = st.secrets["api_keys"]["scraping_ant"]
+    SCRAPER_DO_API_KEY = st.secrets["api_keys"]["scraper_do"]
     TARGET_SHEET_URL = 'https://docs.google.com/spreadsheets/d/1miyn4Y1UZKgJRcOEwKQ6qJCG94tBUFSiGThA3AQI2TU/edit?gid=1224872406#gid=1224872406'
 
     # --- AUTHORIZATION ---
@@ -156,28 +156,21 @@ try:
     log("✅ Old Price and Old Stock columns updated.\n")
     time.sleep(2)
 
-    # --- ScrapingAnt HTML fetcher ---
+    # --- ScrapingAnt HTML fetcher (Now using Scraper.do logic) ---
     def fetch_html_with_scrapingant(url):
-        encoded_url = urllib.parse.quote(url, safe='')
-        path = f"/v2/general?url={encoded_url}&x-api-key={SCRAPING_ANT_API_KEY}&browser=true"
-
+        targetUrl = urllib.parse.quote(url)
+        # Using the exact way you provided
+        scrape_do_url = "http://api.scrape.do/?url={}&token={}".format(targetUrl, SCRAPER_DO_API_KEY)
+        
         try:
-            conn = http.client.HTTPSConnection("api.scrapingant.com")
-            conn.request("GET", path)
-            res = conn.getresponse()
-            if res.status != 200:
-                log(f"❌ ScrapingAnt failed ({res.status}) for {url}")
+            response = requests.request("get", scrape_do_url)
+            if response.status_code != 200:
+                log(f"❌ Scraper.do failed ({response.status_code}) for {url}")
                 return None
-            html = res.read().decode("utf-8")
-            return html
+            return response.text
         except Exception as e:
             log(f"⚠️ Exception fetching {url}: {e}")
             return None
-        finally:
-            try:
-                conn.close()
-            except:
-                pass
 
     # --- Walmart HTML Parser ---
     def parse_walmart_html(html):
@@ -326,7 +319,7 @@ try:
 
     # --- STEP 2: Scraping Loop ---
     log(f"🕷 Starting scrape for {len(target_rows)} rows...\n")
-    batch_size = 300 
+    batch_size = 3000 
     update_chunk = 2
     
     if is_list_mode:
