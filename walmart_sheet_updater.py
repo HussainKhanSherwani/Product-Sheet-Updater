@@ -9,6 +9,7 @@ from datetime import datetime
 import sys
 import streamlit as st
 import os
+from concurrent.futures import ThreadPoolExecutor  # Added for concurrency
 
 # --- CONFIGURATION ---
 try:
@@ -53,7 +54,7 @@ try:
                 return
             except Exception as e:
                 if "429" in str(e) or "quota" in str(e).lower():
-                    wait_time = 10 + (attempt * 5)
+                    wait_time = 15 + (attempt * 10)
                     log(f"⏳ API Quota hit (Batch). Sleeping {wait_time}s...")
                     time.sleep(wait_time)
                 else:
@@ -163,7 +164,7 @@ try:
         scrape_do_url = "http://api.scrape.do/?url={}&token={}".format(targetUrl, SCRAPER_DO_API_KEY)
         
         try:
-            response = requests.request("get", scrape_do_url)
+            response = requests.request("get", scrape_do_url, timeout=100)
             if response.status_code != 200:
                 log(f"❌ Scraper.do failed ({response.status_code}) for {url}")
                 return None
@@ -317,113 +318,81 @@ try:
 
         return final_price, final_stock, final_seller
 
-    # --- STEP 2: Scraping Loop ---
-    log(f"🕷 Starting scrape for {len(target_rows)} rows...\n")
-    batch_size = 3000 
-    update_chunk = 2
-    
-    if is_list_mode:
-        update_chunk = 1
-
-    batch_prices, batch_stocks, batch_buyboxes, batch_dates, batch_rows, batch_flags = ([] for _ in range(6))
-    failed_rows_indices = []
-
-    for i, idx in enumerate(target_rows):
-        if i >= batch_size: 
-            break
-            
+    # --- Wrapper for concurrency ---
+    def process_row(idx):
         if idx - 1 >= len(data):
-            log(f"⚠️ Row {idx} out of bounds, skipping.")
-            continue
-            
-        row = data[idx - 1] 
+            return idx, None, None, None, "OUT_OF_BOUNDS"
         
+        row = data[idx - 1]
         url_str = row[link_col - 1].strip()
-        price = ""
-        stock = 0
-        seller_name = ""
-        flag_status = "SUCCESSFUL" 
-
+        
         if not url_str:
-            pass
-        else:
-            log(f"🔍 Row {idx}: {url_str}")
-            price, stock, seller_name = scrape_multiple_walmart_links(url_str)
-            print(f"🔍 Row {idx}: price: {price}, stock: {stock}")
+            return idx, "", 0, "", "SUCCESSFUL"
+            
+        log(f"🔍 Row {idx}: {url_str}")
+        price, stock, seller_name = scrape_multiple_walmart_links(url_str)
+        print(f"🔍 Row {idx}: price: {price}, stock: {stock}")
+        
+        flag_status = "SUCCESSFUL"
+        if price == "" or price is None:
+            flag_status = "FAILED: Scraper Auto-Retry Again"
+            
+        # Fallbacks to old data if needed
+        old_price = row[old_price_col - 1] if len(row) >= old_price_col else ""
+        old_buybox = row[buybox_col - 1] if len(row) >= buybox_col else ""
+        
+        if not price or price == "":
+            price = old_price or ""
+        if not stock:
+            stock = 0
+        if not seller_name or seller_name.strip() == "":
+            seller_name = old_buybox or ""
+            
+        return idx, price, stock, seller_name, flag_status
 
-            if price == "" or price is None:
+    # --- STEP 2: Scraping Loop ---
+    log(f"🕷 Starting scrape for {len(target_rows)} rows in blocks of 100...\n")
+    batch_size = 3000 
+    failed_rows_indices = []
+    block_size = 50
+
+    # Process in blocks of 100
+    for b in range(0, len(target_rows), block_size):
+        block = target_rows[b:b + block_size]
+        log(f"📦 Processing Block: {block[0]} to {block[-1]}")
+        
+        # Use ThreadPoolExecutor for 5 concurrent requests within this block
+        with ThreadPoolExecutor(max_workers=5) as executor:
+            results = list(executor.map(process_row, block))
+
+        # Collect all updates for this block of 100
+        block_updates = []
+        for idx, price, stock, seller_name, flag_status in results:
+            if flag_status == "OUT_OF_BOUNDS":
+                log(f"⚠️ Row {idx} out of bounds, skipping.")
+                continue
+                
+            if flag_status == "FAILED: Scraper Auto-Retry Again":
                 log(f"⚠️ Row {idx} failed to get price. Added to retry list.")
                 failed_rows_indices.append(idx)
-                flag_status = "FAILED: Scraper Auto-Retry Again"
-
-            old_price = row[old_price_col - 1] if len(row) >= old_price_col else ""
-            old_stock = row[old_stock_col - 1] if len(row) >= old_stock_col else ""
-            old_buybox = row[buybox_col - 1] if len(row) >= buybox_col else ""
-
-            if not price or price == "":
-                price = old_price or ""
-            if not stock:
-                stock = 0
-            if not seller_name or seller_name.strip() == "":
-                seller_name = old_buybox or ""
 
             log(f"✅ {idx}: price={price}, stock={stock}, buybox={seller_name}, flag={flag_status}")
 
-        time.sleep(3) 
-
-        # Handle writing to sheet based on mode
-        if is_list_mode:
-            # LIST MODE: Use SINGLE BATCH for the whole row
-            # This constructs ONE API call to update all 5 disconnected cells
-            row_updates = [
+            # Handle building the updates list for the block
+            ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            block_updates.extend([
                 {'range': f"{get_col_letter(today_price_col)}{idx}", 'values': [[price]]},
                 {'range': f"{get_col_letter(today_stock_col)}{idx}", 'values': [[stock]]},
                 {'range': f"{get_col_letter(buybox_col)}{idx}", 'values': [[seller_name]]},
-                {'range': f"{get_col_letter(date_col)}{idx}", 'values': [[datetime.now().strftime("%Y-%m-%d %H:%M:%S")]]},
+                {'range': f"{get_col_letter(date_col)}{idx}", 'values': [[ts]]},
                 {'range': f"{get_col_letter(flag_col)}{idx}", 'values': [[flag_status]]}
-            ]
-            safe_batch_update(sheet, row_updates)
-            
-        else:
-            # RANGE MODE: Use Batch Accumulation
-            batch_prices.append([price or ""])
-            batch_stocks.append([stock])
-            batch_buyboxes.append([seller_name])
-            batch_dates.append([datetime.now().strftime("%Y-%m-%d %H:%M:%S")])
-            batch_flags.append([flag_status])
-            batch_rows.append(idx)
+            ])
 
-            if len(batch_rows) >= update_chunk:
-                s_row, e_row = batch_rows[0], batch_rows[-1]
-                log(f"📤 Writing rows {s_row}-{e_row}...")
-                
-                # OPTIMIZATION: Combine all column updates into one batch call
-                chunk_updates = [
-                    {'range': f"{get_col_letter(today_price_col)}{s_row}:{get_col_letter(today_price_col)}{e_row}", 'values': batch_prices},
-                    {'range': f"{get_col_letter(today_stock_col)}{s_row}:{get_col_letter(today_stock_col)}{e_row}", 'values': batch_stocks},
-                    {'range': f"{get_col_letter(buybox_col)}{s_row}:{get_col_letter(buybox_col)}{e_row}", 'values': batch_buyboxes},
-                    {'range': f"{get_col_letter(date_col)}{s_row}:{get_col_letter(date_col)}{e_row}", 'values': batch_dates},
-                    {'range': f"{get_col_letter(flag_col)}{s_row}:{get_col_letter(flag_col)}{e_row}", 'values': batch_flags}
-                ]
-                safe_batch_update(sheet, chunk_updates)
-                
-                log(f"✅ Updated rows {s_row}-{e_row}\n")
-
-                batch_prices, batch_stocks, batch_buyboxes, batch_dates, batch_rows, batch_flags = ([] for _ in range(6))
-
-    if not is_list_mode and len(batch_rows) > 0:
-        s_row, e_row = batch_rows[0], batch_rows[-1]
-        log(f"📤 Writing final rows {s_row}-{e_row}...")
-        
-        final_updates = [
-            {'range': f"{get_col_letter(today_price_col)}{s_row}:{get_col_letter(today_price_col)}{e_row}", 'values': batch_prices},
-            {'range': f"{get_col_letter(today_stock_col)}{s_row}:{get_col_letter(today_stock_col)}{e_row}", 'values': batch_stocks},
-            {'range': f"{get_col_letter(buybox_col)}{s_row}:{get_col_letter(buybox_col)}{e_row}", 'values': batch_buyboxes},
-            {'range': f"{get_col_letter(date_col)}{s_row}:{get_col_letter(date_col)}{e_row}", 'values': batch_dates},
-            {'range': f"{get_col_letter(flag_col)}{s_row}:{get_col_letter(flag_col)}{e_row}", 'values': batch_flags}
-        ]
-        safe_batch_update(sheet, final_updates)
-        log(f"✅ Updated rows {s_row}-{e_row}\n")
+        # Batch Write the entire block of 100 to the sheet
+        if block_updates:
+            log(f"📤 Writing Block ({len(block)} rows) to Google Sheets...")
+            safe_batch_update(sheet, block_updates)
+            log(f"✅ Block complete.\n")
 
     log(f"🎉 Done! All rows scraped.")
 
@@ -432,18 +401,13 @@ try:
 
     if failed_rows_indices:
         log(f"\n🔄 --- RETRY PHASE: Attempting {len(failed_rows_indices)} failed rows again ---")
-        log(f"Failed Rows Indices: {failed_rows_indices}")
         
-        for idx in failed_rows_indices:
+        # Retry with concurrency as well
+        with ThreadPoolExecutor(max_workers=5) as executor:
+            retry_results = list(executor.map(process_row, failed_rows_indices))
+            
+        for idx, price, stock, seller_name, flag_status in retry_results:
             try:
-                row_data = data[idx - 1]
-                url_str = row_data[link_col - 1].strip()
-                log(f"🔄 Retrying Row {idx}: {url_str}")
-                
-                # Scrape again
-                price, stock, seller_name = scrape_multiple_walmart_links(url_str)
-                
-                # Check if successful THIS time
                 if price and price != "":
                     log(f"✅ Retry SUCCESS for Row {idx}! New Price: {price}")
                     
@@ -459,16 +423,11 @@ try:
                     
                 else:
                     log(f"❌ Retry FAILED again for Row {idx}. Leaving fallback values.")
-                    final_failed_indices.append(idx) # Add to final list
-                    
-                    # Update Flag Only
+                    final_failed_indices.append(idx)
                     safe_batch_update(sheet, [{'range': f"{get_col_letter(flag_col)}{idx}", 'values': [["FAILED: Manual Entry Required"]]}])
-            
             except Exception as e:
                 log(f"⚠️ Error during retry for row {idx}: {e}")
-                final_failed_indices.append(idx) # Assume fail on error
-            
-            time.sleep(3) # Courtesy delay in retry loop
+                final_failed_indices.append(idx)
 
     # --- FINAL REPORT ---
     if final_failed_indices:
